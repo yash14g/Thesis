@@ -133,6 +133,9 @@ Subtract ego vehicle position
 Rotate by inverse ego orientation
         ↓
 Ego coordinates
+
+
+Annotation Coordinate Transformation: Ground-truth annotations in nuScenes are provided in the global coordinate frame, whereas the proposed BEV representation is defined in the ego vehicle frame. Therefore, each annotated object is transformed from the global frame into the ego frame by applying the inverse ego-pose translation and rotation. This ensures that the generated detection targets are spatially aligned with the LiDAR BEV representation used by the network. Prior to this transformation, objects fell outside the BEV grid, resulting in empty heatmaps and ineffective training. After applying the transformation, valid heatmap targets and regression labels were generated, enabling successful optimization of the detection network.
 ============================================================
 TARGET DEBUG
 ============================================================
