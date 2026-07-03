@@ -1,0 +1,12 @@
+# big ML stuff (DO NOT UPLOAD)
+Data_set/
+.venv/
+
+# Python junk
+__pycache__/
+*.pyc
+
+# model files
+*.pt
+*.pth
+*.ckpt

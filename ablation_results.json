@@ -1,0 +1,11 @@
+[
+  {
+    "fusion_mode": "se_unidirectional",
+    "mAP": 0.0,
+    "FPS": 0.7,
+    "latency_ms": 1509.6,
+    "params_M": 0.67,
+    "checkpoint_loaded": true,
+    "label": "SE Unidirectional \u2605 (proposed)"
+  }
+]
