@@ -9,4 +9,5 @@ __pycache__/
 # model files
 *.pt
 *.pth
-*.ckpt.DS_Store
+*.ckpt
+.DS_Store
