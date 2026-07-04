@@ -12,6 +12,7 @@ Usage (Colab):
 
 import os
 import time
+from PIL.ImageChops import offset
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
@@ -96,7 +97,12 @@ def build_targets(gt_boxes, gt_labels, bev_h, bev_w, bev_cfg, num_classes, devic
             # convert to BEV grid coords
             xi = ((x - x_min) / vox).long()
             yi = ((y - y_min) / vox).long()
-
+            #if i < 3:
+               # print(
+                   # f"Object {i}: "
+                   # f"x={x:.2f}, y={y:.2f}, "
+                   # f"grid=({xi.item()},{yi.item()})"
+                   # )
             if not (0 <= xi < bev_w and 0 <= yi < bev_h):
                 continue
 
@@ -105,8 +111,8 @@ def build_targets(gt_boxes, gt_labels, bev_h, bev_w, bev_cfg, num_classes, devic
             _draw_gaussian(heatmap[b, cls], yi.item(), xi.item(), radius)
 
             # regression targets at centre cell
-            x_off = (x / vox) - xi.float()
-            y_off = (y / vox) - yi.float()
+            x_off = ((x - x_min) / vox) - xi.float()   # FIXED — was: (x / vox) - xi.float()
+            y_off = ((y - y_min) / vox) - yi.float()   # FIXED — was: (y / vox) - yi.float()
             offset[b, 0, yi, xi]   = x_off
             offset[b, 1, yi, xi]   = y_off
             height_t[b, 0, yi, xi] = z
@@ -116,6 +122,27 @@ def build_targets(gt_boxes, gt_labels, bev_h, bev_w, bev_cfg, num_classes, devic
             rot_t[b, 0, yi, xi]    = torch.sin(yaw)
             rot_t[b, 1, yi, xi]    = torch.cos(yaw)
             pos_mask[b, 0, yi, xi] = 1.0
+
+           # print(
+            #    f"Assigned object: class={cls}, "
+            #    f"cell=({xi.item()},{yi.item()}), "
+            #    f"size=({w:.2f}, {l:.2f}, {h:.2f})"
+           # )
+# ------------------------------------------------------------
+# TARGET DEBUG
+# Uncomment when debugging target generation
+# ------------------------------------------------------------
+
+# print("=" * 60)
+# print("TARGET DEBUG")
+# print("=" * 60)
+# print(f"Positive pixels : {pos_mask.sum().item()}")
+# print(f"Heatmap max     : {heatmap.max().item():.4f}")
+# print(f"Size sum        : {size_t.sum().item():.4f}")
+# print(f"Height sum      : {height_t.sum().item():.4f}")
+# print(f"Offset sum      : {offset.sum().item():.4f}")
+# print(f"Rotation sum    : {rot_t.sum().item():.4f}")
+# print("=" * 60)
 
     return {
         "heatmap":  heatmap,
@@ -282,10 +309,15 @@ class Trainer:
             total_loss += loss.item()
 
             if (i + 1) % self.cfg.log_every == 0:
-                print(f"  [{epoch}][{i+1}/{len(self.train_loader)}] "
-                      f"loss={loss.item():.4f} "
-                      f"(hm={losses['heatmap'].item():.3f} "
-                      f"sz={losses['size'].item():.3f})")
+                print(
+                    f"[{epoch}][{i+1}/{len(self.train_loader)}] "
+                    f"loss={loss.item():.4f} "
+                    f"hm={losses['heatmap'].item():.4f} "
+                    f"off={losses['offset'].item():.4f} "
+                    f"h={losses['height'].item():.4f} "
+                    f"sz={losses['size'].item():.4f} "
+                    f"rot={losses['rotation'].item():.4f}"
+                )
 
         return total_loss / len(self.train_loader)
 

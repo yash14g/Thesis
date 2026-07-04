@@ -27,9 +27,9 @@ from models.detection_head import decode_predictions
 from tools.train import collate_fn
 
 
-# ------------------------------------------------------------
+
 # IoU utilities
-# ------------------------------------------------------------
+
 def box_iou_bev(box1, box2):
     """
     Simple BEV 2D IoU between two boxes.
@@ -56,9 +56,9 @@ def box_iou_bev(box1, box2):
     return inter / union
 
 
-# ------------------------------------------------------------
+
 # mAP computation
-# ------------------------------------------------------------
+
 def compute_map(all_preds, all_gts, num_classes=10, iou_thresh=0.5):
     """
     Compute mAP@0.5 over all samples.
@@ -131,9 +131,9 @@ def compute_map(all_preds, all_gts, num_classes=10, iou_thresh=0.5):
     return float(np.mean(aps)) if aps else 0.0
 
 
-# ------------------------------------------------------------
+
 # FPS benchmark
-# ------------------------------------------------------------
+
 def benchmark_fps(model, device, n_runs=30):
     """Measure inference FPS on a single sample."""
     model.eval()
@@ -165,9 +165,8 @@ def benchmark_fps(model, device, n_runs=30):
     return fps, latency
 
 
-# ------------------------------------------------------------
 # Full evaluation
-# ------------------------------------------------------------
+
 def evaluate(
     fusion_mode: str,
     dataroot: str,
@@ -203,24 +202,143 @@ def evaluate(
         all_preds, all_gts = [], []
         model.eval()
 
+        #debug_count = 0
+
         with torch.no_grad():
             for batch in loader:
+
                 batch_gpu = {
                     k: v.to(device) if isinstance(v, torch.Tensor) else v
                     for k, v in batch.items()
                 }
-                preds = model(batch_gpu)
-                dets = decode_predictions(preds, BEV_CONFIG, score_thresh=0.3)
 
+                # -----------------------------------------------------
+                # Forward pass
+                # -----------------------------------------------------
+                preds = model(batch_gpu)
+
+                # -----------------------------------------------------
+                # OLD DECODING
+                # -----------------------------------------------------
+                # dets = decode_predictions(
+                #     preds,
+                #     BEV_CONFIG,
+                #     score_thresh=0.5
+                # )
+
+                # Previous threshold:
+                # score_thresh=0.3
+
+                # -----------------------------------------------------
+                # DEBUG DECODING
+                #
+                # Temporarily use 0.05 to check whether the model is
+                # producing low-confidence detections.
+                # -----------------------------------------------------
+                dets = decode_predictions(
+                    preds,
+                    BEV_CONFIG,
+                    score_thresh=0.05
+                )
+
+                # -----------------------------------------------------
+                # DEBUG FIRST 5 SAMPLES ONLY
+                # -----------------------------------------------------
+                #if debug_count < 5:
+
+                   # hm = preds["heatmap"]
+
+                   # print("\n" + "=" * 60)
+                   # print(f"EVALUATION DEBUG — SAMPLE {debug_count}")
+                   # print("=" * 60)
+
+                    #print(
+                    #   f"Heatmap max  : "
+                    #    f"{hm.max().item():.6f}"
+                    #)
+
+                    #print(
+                    #   f"Heatmap mean : "
+                    #   f"{hm.mean().item():.6f}"
+                    #)
+
+                    #for i, det in enumerate(dets):
+
+                       # num_preds = len(det["boxes"])
+                       #num_gts = len(batch["gt_boxes"][i])
+
+                        #print(f"\nDecoded predictions : {num_preds}")
+                        #print(f"GT boxes            : {num_gts}")
+
+                        # ---------------------------------------------
+                        # Prediction information
+                        # ---------------------------------------------
+                        #if num_preds > 0:
+
+                           # top_scores = torch.topk(
+                           #     det["scores"],
+                           #    k=min(5, len(det["scores"]))
+                           #).values
+
+                           # print("\nTop prediction scores:")
+                           # print(top_scores.detach().cpu())
+
+                           # print("\nFirst predicted box:")
+                           # print(
+                           #     det["boxes"][0]
+                           #     .detach()
+                           #     .cpu()
+                           # )
+
+                           # print("\nFirst predicted label:")
+                           # print(
+                           #     det["labels"][0]
+                           #     .detach()
+                           #     .cpu()
+                           # )
+
+                        # ---------------------------------------------
+                        # Ground truth information
+                        # ---------------------------------------------
+                        #if num_gts > 0:
+
+                        #    print("\nFirst GT box:")
+                        #    print(
+                        #        batch["gt_boxes"][i][0]
+                        #    )
+
+                        #    print("\nFirst GT label:")
+                        #    print(
+                        #        batch["gt_labels"][i][0]
+                        #    )
+
+                    #print("=" * 60)
+
+                    #debug_count += 1
+
+                # -----------------------------------------------------
+                # Store predictions and ground truth
+                # -----------------------------------------------------
                 for i, det in enumerate(dets):
-                    all_preds.append({k: v.cpu() for k, v in det.items()})
+
+                    all_preds.append({
+                        k: v.cpu()
+                        for k, v in det.items()
+                    })
+
                     all_gts.append({
                         "boxes": batch["gt_boxes"][i],
                         "labels": batch["gt_labels"][i],
                     })
 
-        mAP = compute_map(all_preds, all_gts, num_classes=num_classes)
-
+        # -------------------------------------------------------------
+        # Compute mAP
+        # -------------------------------------------------------------
+        mAP = compute_map(
+            all_preds,
+            all_gts,
+            num_classes=num_classes
+        )
     return {
         "fusion_mode": fusion_mode,
         "mAP": None if mAP is None else round(mAP, 4),
@@ -231,15 +349,15 @@ def evaluate(
     }
 
 
-# ------------------------------------------------------------
+
 # Run selected experiments
-# ------------------------------------------------------------
+
 def run_ablation_study(
     dataroot: str,
     device: str = "cpu",
     ckpt_dir: str = "checkpoints",
 ):
-    # For now, evaluate only the trained fused model.
+
     experiments = [
         ("se_unidirectional", "SE Unidirectional ★ (proposed)"),
     ]
