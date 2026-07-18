@@ -238,7 +238,7 @@ def evaluate(
                 dets = decode_predictions(
                     preds,
                     BEV_CONFIG,
-                    score_thresh=0.05
+                    score_thresh=0.3
                 )
 
                 # -----------------------------------------------------
