@@ -1,11 +1,12 @@
 """
 Training Script
 ===============
-Trains LightFusionNet on nuScenes-mini.
+Trains LightFusionNet on nuScenes (trainval, partial).
+
 
 Usage (Colab):
     from train import Trainer, TrainConfig
-    cfg     = TrainConfig(dataroot="/content/drive/MyDrive/nuscenes")
+    cfg     = TrainConfig(dataroot="/content/nuscenes")#TrainConfig(dataroot="/content/drive/MyDrive/nuscenes")
     trainer = Trainer(cfg)
     trainer.train()
 """
@@ -24,15 +25,20 @@ from data.nuscenes_loader import NuScenesBEVDataset, BEV_CONFIG
 from models.model import build_model, LightFusionNet
 from models.detection_head import decode_predictions
 
+def _default_dataroot():
+    return "/content/nuscenes" if os.path.exists("/content") else \
+           "/Users/yashgupta14/Downloads/bevfusion_ugv/Data_set/v1.0-mini"
 
+def _default_save_dir():
+    return "/content/drive/MyDrive/checkpoints" if os.path.exists("/content") else "checkpoints"
 
 # Config
 
 @dataclass
 class TrainConfig:
     # data
-    dataroot:      str   = "/Users/yashgupta14/Downloads/bevfusion_ugv/Data_set/v1.0-mini"
-    version:       str   = "v1.0-mini"
+    dataroot:      str   = field(default_factory=_default_dataroot)#"/Users/yashgupta14/Downloads/bevfusion_ugv/Data_set/v1.0-mini"
+    version:       str   = "v1.0-trainval"#"v1.0-mini"
     val_fraction:  float = 0.2
 
     # model
@@ -52,7 +58,7 @@ class TrainConfig:
     # runtime
     device:        str   = "cuda" if torch.cuda.is_available() else "cpu"
     num_workers:   int   = 2
-    save_dir:      str   = "checkpoints"
+    save_dir:      str   = field(default_factory=_default_save_dir)#"checkpoints"
     log_every:     int   = 10         # log every N batches
 
 
@@ -265,6 +271,7 @@ class Trainer:
             elapsed = time.time() - t0
             self.history["train_loss"].append(train_loss)
             self.history["val_loss"].append(val_loss)
+            self._save_history()
 
             print(f"Epoch {epoch:3d}/{self.cfg.epochs} | "
                   f"train: {train_loss:.4f} | "
@@ -354,7 +361,11 @@ class Trainer:
             "optimiser":   self.optimiser.state_dict(),
         }, path)
         print(f"  → Saved checkpoint: {path}")
-    
+    def _save_history(self):
+        import json
+        path = os.path.join(self.cfg.save_dir, f"history_{self.cfg.fusion_mode}.json")
+        with open(path, "w") as f:
+            json.dump(self.history, f, indent=2)    
 if __name__ == "__main__":
     cfg = TrainConfig()
     trainer = Trainer(cfg)

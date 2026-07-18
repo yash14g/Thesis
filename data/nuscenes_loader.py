@@ -6,6 +6,7 @@ BEV-ready tensors for the fusion pipeline.
 """
 
 import os
+from matplotlib.style import available
 import numpy as np
 import torch
 from torch.utils.data import Dataset
@@ -134,8 +135,31 @@ class NuScenesBEVDataset(Dataset):
         ])
 
         # collect all keyframe tokens
-        self.samples = self.nusc.sample
+        self.samples = self._filter_available_samples(self.nusc.sample)
+    
+    def _filter_available_samples(self, all_samples):
+        available = []
+        missing_scenes = set()
+        for sample in all_samples:
+            scene_token = sample["scene_token"]
+            if scene_token in missing_scenes:
+                continue
+            cam_token = sample["data"]["CAM_FRONT"]
+            cam_path  = os.path.join(
+                self.nusc.dataroot,
+                self.nusc.get("sample_data", cam_token)["filename"]
+            )
+            if os.path.exists(cam_path):
+                available.append(sample)
+            else:
+                missing_scenes.add(scene_token)
 
+        n_total = len(all_samples)
+        n_avail = len(available)
+        print(f"[NuScenesBEVDataset] {n_avail}/{n_total} samples available "
+          f"({len(missing_scenes)} scenes missing sensor files)")
+        return available
+    
     def __len__(self):
         return len(self.samples)
 
