@@ -49,8 +49,8 @@ class TrainConfig:
     bev_w:         int   = 200
 
     # training
-    epochs:        int   = 5
-    batch_size:    int   = 2          # small for Colab GPU RAM
+    epochs:        int   = 15
+    batch_size:    int   = 8          # small for Colab GPU RAM
     lr:            float = 2e-4
     weight_decay:  float = 1e-4
     grad_clip:     float = 10.0
@@ -60,7 +60,7 @@ class TrainConfig:
     num_workers:   int   = 2
     save_dir:      str   = field(default_factory=_default_save_dir)#"checkpoints"
     log_every:     int   = 10         # log every N batches
-
+    resume_from:   Optional[str] = None   # path to a .pth checkpoint to resume from
 
 # ------------------------------------------------------------------
 # Target builder — converts GT boxes to dense BEV maps for loss
@@ -261,6 +261,11 @@ class Trainer:
         print(f"Train samples: {len(self.train_ds)} | Val: {len(self.val_ds)}\n")
 
         best_val = float("inf")
+        start_epoch = 1
+
+        if self.cfg.resume_from is not None:
+            last_epoch = self.load_checkpoint(self.cfg.resume_from)
+            start_epoch = last_epoch + 1
 
         for epoch in range(1, self.cfg.epochs + 1):
             t0         = time.time()
@@ -366,6 +371,13 @@ class Trainer:
         path = os.path.join(self.cfg.save_dir, f"history_{self.cfg.fusion_mode}.json")
         with open(path, "w") as f:
             json.dump(self.history, f, indent=2)    
+    def load_checkpoint(self, path):
+        ckpt = torch.load(path, map_location=self.cfg.device)
+        self.model.load_state_dict(ckpt["state_dict"])
+        self.optimiser.load_state_dict(ckpt["optimiser"])
+        start_epoch = ckpt["epoch"]
+        print(f"Resumed from epoch {start_epoch}, val_loss={ckpt['val_loss']:.4f}")
+        return start_epoch
 if __name__ == "__main__":
     cfg = TrainConfig()
     trainer = Trainer(cfg)
