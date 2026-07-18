@@ -183,8 +183,8 @@ def collate_fn(batch):
 
     # dummy calibration (real calibration loading is done in full pipeline)
     B = images.shape[0]
-    cam2ego    = torch.eye(4).unsqueeze(0).unsqueeze(0).expand(B, 6, 4, 4)
-    intrinsics = (torch.eye(3) * 500).unsqueeze(0).unsqueeze(0).expand(B, 6, 3, 3)
+    cam2ego    = torch.eye(4).unsqueeze(0).unsqueeze(0).expand(B, 6, 4, 4).contiguous()
+    intrinsics = (torch.eye(3) * 500).unsqueeze(0).unsqueeze(0).expand(B, 6, 3, 3).contiguous()
 
     return {
         "images":     images,
