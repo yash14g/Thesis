@@ -19,6 +19,7 @@ import time
 import json
 import torch
 import numpy as np
+import argparse
 from torch.utils.data import DataLoader
 
 from data.nuscenes_loader import NuScenesBEVDataset, BEV_CONFIG
@@ -397,9 +398,27 @@ def run_ablation_study(
     return results
 
 
+
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--dataroot",
+        required=True,
+        help="Path to nuScenes root folder"
+    )
+
+    parser.add_argument(
+        "--ckpt_dir",
+        default="checkpoints",
+        help="Checkpoint directory"
+    )
+
+    args = parser.parse_args()
+
     run_ablation_study(
-        dataroot="/Users/yashgupta14/Downloads/bevfusion_ugv/Data_set/v1.0-mini",
-        device="mps" if torch.backends.mps.is_available() else "cpu",
-        ckpt_dir="checkpoints",
+        dataroot=args.dataroot,
+        device="cuda" if torch.cuda.is_available() else "cpu",
+        ckpt_dir=args.ckpt_dir,
     )
