@@ -20,12 +20,14 @@ import json
 import torch
 import numpy as np
 import argparse
+from shapely.geometry import Polygon
 from torch.utils.data import DataLoader
 
 from data.nuscenes_loader import NuScenesBEVDataset, BEV_CONFIG
 from models.model import build_model
 from models.detection_head import decode_predictions
 from tools.train import collate_fn
+from fvcore.nn import FlopCountAnalysis
 
 
 
@@ -135,7 +137,7 @@ def compute_map(all_preds, all_gts, num_classes=10, iou_thresh=0.5):
 
 # FPS benchmark
 
-def benchmark_fps(model, device, n_runs=30):
+def benchmark_fps(model, device, n_runs=100):
     """Measure inference FPS on a single sample."""
     model.eval()
 
@@ -147,24 +149,38 @@ def benchmark_fps(model, device, n_runs=30):
     }
 
     with torch.no_grad():
-        for _ in range(5):
+        for _ in range(20):
             _ = model(dummy)
 
     if device == "cuda":
         torch.cuda.synchronize()
 
-    t0 = time.time()
+    t0 = time.perf_counter()
     with torch.no_grad():
         for _ in range(n_runs):
             _ = model(dummy)
             if device == "cuda":
                 torch.cuda.synchronize()
-    elapsed = time.time() - t0
+    elapsed = time.perf_counter() - t0
 
     fps = n_runs / elapsed
     latency = (elapsed / n_runs) * 1000.0
     return fps, latency
+def compute_flops(model, device):
 
+    model.eval()
+
+    dummy = {
+        "bev_lidar": torch.randn(1, 4, 200, 200).to(device),
+        "images": torch.randn(1, 6, 3, 224, 224).to(device),
+        "cam2ego": torch.eye(4).unsqueeze(0).unsqueeze(0).expand(1,6,4,4).to(device),
+        "intrinsics": (torch.eye(3)*500).unsqueeze(0).unsqueeze(0).expand(1,6,3,3).to(device),
+    }
+
+    with torch.no_grad():
+        flops = FlopCountAnalysis(model, dummy)
+
+    return flops.total() / 1e9
 
 # Full evaluation
 
@@ -188,10 +204,10 @@ def evaluate(
 
     fps, latency = benchmark_fps(model, device)
     params = model.count_parameters()["total"]
-
+    gflops = compute_flops(model, device)
     mAP = None
     if checkpoint_loaded:
-        dataset = NuScenesBEVDataset(dataroot=dataroot, version="v1.0-mini")
+        dataset = NuScenesBEVDataset(dataroot=dataroot)
         loader = DataLoader(
             dataset,
             batch_size=1,
@@ -342,10 +358,11 @@ def evaluate(
         )
     return {
         "fusion_mode": fusion_mode,
-        "mAP": None if mAP is None else round(mAP, 4),
-        "FPS": round(fps, 1),
-        "latency_ms": round(latency, 1),
-        "params_M": round(params / 1e6, 2),
+        "mAP": None if mAP is None else round(mAP,4),
+        "FPS": round(fps,1),
+        "latency_ms": round(latency,1),
+        "params_M": round(params/1e6,2),
+        "GFLOPs": round(gflops,2),
         "checkpoint_loaded": checkpoint_loaded,
     }
 
@@ -378,16 +395,18 @@ def run_ablation_study(
             f"FPS={res['FPS']:.1f} | "
             f"Latency={res['latency_ms']:.1f}ms | "
             f"Params={res['params_M']:.2f}M"
+            f"GFLOPs={res['GFLOPs']:.2f}"
         )
 
     print("\n" + "=" * 72)
-    print(f"{'Model':<35} {'mAP':>8} {'FPS':>6} {'Latency':>10} {'Params':>8}")
+    print(f"{'Model':<35} {'mAP':>8} {'FPS':>6} {'Latency':>10} {'Params':>8} {'GFLOPs':>10}")
     print("-" * 72)
     for r in results:
         map_str = f"{r['mAP']:.4f}" if r["mAP"] is not None else "N/A"
         print(
             f"{r['label']:<35} {map_str:>8} {r['FPS']:>6.1f} "
             f"{r['latency_ms']:>9.1f}ms {r['params_M']:>7.2f}M"
+            f"{r['GFLOPs']:>9.2f}"
         )
     print("=" * 72)
 
