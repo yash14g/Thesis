@@ -18,13 +18,13 @@ import torch.nn.functional as F
 from torchvision.models import efficientnet_b0
 
 
-# ------------------------------------------------------------------
+
 # Lightweight image backbone (EfficientNet-B0 encoder)
-# ------------------------------------------------------------------
+
 class ImageBackbone(nn.Module):
     """
     Extracts feature maps from each camera image.
-    Uses EfficientNet-B0 up to the penultimate layer.
+    Uses EfficientNet-B0 up to the second last layer.
     Output: (B*6, C_out, H/8, W/8)
     """
     def __init__(self, out_channels: int = 64):
@@ -42,9 +42,8 @@ class ImageBackbone(nn.Module):
         return x  # (B*6, C_out, h, w)
 
 
-# ------------------------------------------------------------------
 # Depth prediction head
-# ------------------------------------------------------------------
+
 class DepthHead(nn.Module):
     """
     Predicts discrete depth distribution over D bins.

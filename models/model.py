@@ -42,7 +42,7 @@ FUSION_MODES = {
 
 # ------------------------------------------------------------------
 # Full model
-# ------------------------------------------------------------------
+
 class LightFusionNet(nn.Module):
     """
     Lightweight camera-LiDAR BEV fusion network for 3D object detection.

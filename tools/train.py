@@ -175,25 +175,24 @@ def _draw_gaussian(heatmap, cy, cx, radius):
 # Collate function
 # ------------------------------------------------------------------
 def collate_fn(batch):
-    images    = torch.stack([b["images"]    for b in batch])
+    images = torch.stack([b["images"] for b in batch])
     bev_lidar = torch.stack([b["bev_lidar"] for b in batch])
-    gt_boxes  = [b["gt_boxes"]  for b in batch]
-    gt_labels = [b["gt_labels"] for b in batch]
-    tokens    = [b["token"]     for b in batch]
 
-    # dummy calibration (real calibration loading is done in full pipeline)
-    B = images.shape[0]
-    cam2ego    = torch.eye(4).unsqueeze(0).unsqueeze(0).expand(B, 6, 4, 4).contiguous()
-    intrinsics = (torch.eye(3) * 500).unsqueeze(0).unsqueeze(0).expand(B, 6, 3, 3).contiguous()
+    cam2ego = torch.stack([b["cam2ego"] for b in batch])
+    intrinsics = torch.stack([b["intrinsics"] for b in batch])
+
+    gt_boxes = [b["gt_boxes"] for b in batch]
+    gt_labels = [b["gt_labels"] for b in batch]
+    tokens = [b["token"] for b in batch]
 
     return {
-        "images":     images,
-        "bev_lidar":  bev_lidar,
-        "cam2ego":    cam2ego,
+        "images": images,
+        "bev_lidar": bev_lidar,
+        "cam2ego": cam2ego,
         "intrinsics": intrinsics,
-        "gt_boxes":   gt_boxes,
-        "gt_labels":  gt_labels,
-        "tokens":     tokens,
+        "gt_boxes": gt_boxes,
+        "gt_labels": gt_labels,
+        "tokens": tokens,
     }
 
 

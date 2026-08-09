@@ -137,35 +137,45 @@ def compute_map(all_preds, all_gts, num_classes=10, iou_thresh=0.5):
 
 # FPS benchmark
 
-def benchmark_fps(model, device, n_runs=100):
-    """Measure inference FPS on a single sample."""
+def benchmark_fps(model, dataset, device, n_runs=30):
+    """Measure inference FPS and latency using a real nuScenes sample."""
     model.eval()
 
-    dummy = {
-        "bev_lidar": torch.randn(1, 4, 200, 200).to(device),
-        "images": torch.randn(1, 6, 3, 224, 224).to(device),
-        "cam2ego": torch.eye(4).unsqueeze(0).unsqueeze(0).expand(1, 6, 4, 4).to(device),
-        "intrinsics": (torch.eye(3) * 500).unsqueeze(0).unsqueeze(0).expand(1, 6, 3, 3).to(device),
-    }
+    # Get one real sample
+    sample = dataset[0]
 
+    # Add batch dimension
+    batch = {}
+    for k, v in sample.items():
+        if isinstance(v, torch.Tensor):
+            batch[k] = v.unsqueeze(0).to(device)
+        else:
+            batch[k] = v
+
+    # Warm-up
     with torch.no_grad():
-        for _ in range(20):
-            _ = model(dummy)
+        for _ in range(5):
+            _ = model(batch)
 
     if device == "cuda":
         torch.cuda.synchronize()
 
-    t0 = time.perf_counter()
+    t0 = time.time()
+
     with torch.no_grad():
         for _ in range(n_runs):
-            _ = model(dummy)
+            _ = model(batch)
+
             if device == "cuda":
                 torch.cuda.synchronize()
-    elapsed = time.perf_counter() - t0
+
+    elapsed = time.time() - t0
 
     fps = n_runs / elapsed
     latency = (elapsed / n_runs) * 1000.0
+
     return fps, latency
+# FLOPs benchmark using the same model input shape as the network.
 def compute_flops(model, device):
 
     model.eval()
@@ -202,12 +212,37 @@ def evaluate(
     else:
         print(f"  No checkpoint found for {fusion_mode}; skipping mAP.")
 
-    fps, latency = benchmark_fps(model, device)
     params = model.count_parameters()["total"]
-    gflops = compute_flops(model, device)
+    gflops = None
     mAP = None
+
     if checkpoint_loaded:
-        dataset = NuScenesBEVDataset(dataroot=dataroot)
+
+        # ---------------------------------------------------------
+        # Load REAL nuScenes dataset
+        # ---------------------------------------------------------
+        dataset = NuScenesBEVDataset(
+            dataroot=dataroot,
+            version="v1.0-mini"
+        )
+
+        # ---------------------------------------------------------
+        # Benchmark FPS / latency using REAL sample
+        # ---------------------------------------------------------
+        fps, latency = benchmark_fps(
+            model,
+            dataset,
+            device
+        )
+
+        # ---------------------------------------------------------
+        # Compute FLOPs
+        # ---------------------------------------------------------
+        gflops = compute_flops(model, device)
+
+        # ---------------------------------------------------------
+        # DataLoader for mAP evaluation
+        # ---------------------------------------------------------
         loader = DataLoader(
             dataset,
             batch_size=1,
@@ -218,8 +253,6 @@ def evaluate(
 
         all_preds, all_gts = [], []
         model.eval()
-
-        #debug_count = 0
 
         with torch.no_grad():
             for batch in loader:
@@ -235,103 +268,13 @@ def evaluate(
                 preds = model(batch_gpu)
 
                 # -----------------------------------------------------
-                # OLD DECODING
-                # -----------------------------------------------------
-                # dets = decode_predictions(
-                #     preds,
-                #     BEV_CONFIG,
-                #     score_thresh=0.5
-                # )
-
-                # Previous threshold:
-                # score_thresh=0.3
-
-                # -----------------------------------------------------
-                # DEBUG DECODING
-                #
-                # Temporarily use 0.05 to check whether the model is
-                # producing low-confidence detections.
+                # Decode predictions
                 # -----------------------------------------------------
                 dets = decode_predictions(
                     preds,
                     BEV_CONFIG,
                     score_thresh=0.3
                 )
-
-                # -----------------------------------------------------
-                # DEBUG FIRST 5 SAMPLES ONLY
-                # -----------------------------------------------------
-                #if debug_count < 5:
-
-                   # hm = preds["heatmap"]
-
-                   # print("\n" + "=" * 60)
-                   # print(f"EVALUATION DEBUG — SAMPLE {debug_count}")
-                   # print("=" * 60)
-
-                    #print(
-                    #   f"Heatmap max  : "
-                    #    f"{hm.max().item():.6f}"
-                    #)
-
-                    #print(
-                    #   f"Heatmap mean : "
-                    #   f"{hm.mean().item():.6f}"
-                    #)
-
-                    #for i, det in enumerate(dets):
-
-                       # num_preds = len(det["boxes"])
-                       #num_gts = len(batch["gt_boxes"][i])
-
-                        #print(f"\nDecoded predictions : {num_preds}")
-                        #print(f"GT boxes            : {num_gts}")
-
-                        # ---------------------------------------------
-                        # Prediction information
-                        # ---------------------------------------------
-                        #if num_preds > 0:
-
-                           # top_scores = torch.topk(
-                           #     det["scores"],
-                           #    k=min(5, len(det["scores"]))
-                           #).values
-
-                           # print("\nTop prediction scores:")
-                           # print(top_scores.detach().cpu())
-
-                           # print("\nFirst predicted box:")
-                           # print(
-                           #     det["boxes"][0]
-                           #     .detach()
-                           #     .cpu()
-                           # )
-
-                           # print("\nFirst predicted label:")
-                           # print(
-                           #     det["labels"][0]
-                           #     .detach()
-                           #     .cpu()
-                           # )
-
-                        # ---------------------------------------------
-                        # Ground truth information
-                        # ---------------------------------------------
-                        #if num_gts > 0:
-
-                        #    print("\nFirst GT box:")
-                        #    print(
-                        #        batch["gt_boxes"][i][0]
-                        #    )
-
-                        #    print("\nFirst GT label:")
-                        #    print(
-                        #        batch["gt_labels"][i][0]
-                        #    )
-
-                    #print("=" * 60)
-
-                    #debug_count += 1
 
                 # -----------------------------------------------------
                 # Store predictions and ground truth
@@ -356,20 +299,20 @@ def evaluate(
             all_gts,
             num_classes=num_classes
         )
+
+    else:
+        # No checkpoint -> cannot calculate mAP/FPS/FLOPs.
+        fps, latency = 0.0, 0.0
+
     return {
         "fusion_mode": fusion_mode,
-        "mAP": None if mAP is None else round(mAP,4),
-        "FPS": round(fps,1),
-        "latency_ms": round(latency,1),
-        "params_M": round(params/1e6,2),
-        "GFLOPs": round(gflops,2),
+        "mAP": None if mAP is None else round(mAP, 4),
+        "FPS": round(fps, 1),
+        "latency_ms": round(latency, 1),
+        "params_M": round(params / 1e6, 2),
+        "GFLOPs": None if gflops is None else round(gflops, 2),
         "checkpoint_loaded": checkpoint_loaded,
     }
-
-
-
-# Run selected experiments
-
 def run_ablation_study(
     dataroot: str,
     device: str = "cpu",

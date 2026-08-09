@@ -166,25 +166,63 @@ class NuScenesBEVDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.samples[idx]
 
-        # 1. Camera images
+        # 1. Camera images + calibration
         images = []
+        cam2ego_list = []
+        intrinsics_list = []
+
         for cam in self.CAMERA_NAMES:
             cam_token = sample["data"][cam]
-            cam_data  = self.nusc.get("sample_data", cam_token)
-            img_path  = os.path.join(self.nusc.dataroot, cam_data["filename"])
-            img       = PIL.Image.open(img_path).convert("RGB")
-            images.append(self.img_tf(img))
-        images = torch.stack(images, dim=0)  # (6, 3, H, W)
+            cam_data = self.nusc.get("sample_data", cam_token)
+            img_path = os.path.join(self.nusc.dataroot, cam_data["filename"])
+            img = PIL.Image.open(img_path).convert("RGB")
 
-        # 2. LiDAR point cloud → ego frame → BEV
+            # Original image dimensions
+            orig_w, orig_h = img.size
+
+            # Camera calibration
+            cs_record = self.nusc.get(
+                "calibrated_sensor",
+                cam_data["calibrated_sensor_token"]
+            )
+
+            K = np.array(cs_record["camera_intrinsic"], dtype=np.float32)
+
+            # Camera -> ego transformation
+            cam2ego = np.eye(4, dtype=np.float32)
+            cam2ego[:3, :3] = Quaternion(cs_record["rotation"]).rotation_matrix
+            cam2ego[:3, 3] = np.array(cs_record["translation"], dtype=np.float32)
+
+            # Resize image
+            img = self.img_tf(img)
+
+            # Scale intrinsics to resized image
+            sx = IMG_W / orig_w
+            sy = IMG_H / orig_h
+            K[0, 0] *= sx
+            K[0, 2] *= sx
+            K[1, 1] *= sy
+            K[1, 2] *= sy
+
+            images.append(img)
+            cam2ego_list.append(torch.from_numpy(cam2ego))
+            intrinsics_list.append(torch.from_numpy(K))
+
+        images = torch.stack(images, dim=0)  # (6, 3, H, W)
+        cam2ego = torch.stack(cam2ego_list, dim=0)  # (6, 4, 4)
+        intrinsics = torch.stack(intrinsics_list, dim=0)  # (6, 3, 3)
+
+        # 2. LiDAR point cloud -> ego frame -> BEV
         lidar_token = sample["data"]["LIDAR_TOP"]
-        lidar_data  = self.nusc.get("sample_data", lidar_token)
-        lidar_path  = os.path.join(self.nusc.dataroot, lidar_data["filename"])
-        pc          = LidarPointCloud.from_file(lidar_path)
+        lidar_data = self.nusc.get("sample_data", lidar_token)
+        lidar_path = os.path.join(self.nusc.dataroot, lidar_data["filename"])
+        pc = LidarPointCloud.from_file(lidar_path)
 
         # sensor -> ego (calibrated_sensor extrinsics)
-        cs_record = self.nusc.get("calibrated_sensor",
-                                   lidar_data["calibrated_sensor_token"])
+        cs_record = self.nusc.get(
+            "calibrated_sensor",
+            lidar_data["calibrated_sensor_token"]
+        )
         pc.rotate(Quaternion(cs_record["rotation"]).rotation_matrix)
         pc.translate(np.array(cs_record["translation"]))
 
@@ -196,13 +234,14 @@ class NuScenesBEVDataset(Dataset):
         gt_boxes, gt_labels = self._load_annotations(sample, lidar_data)
 
         return {
-            "images":    images,
+            "images": images,
             "bev_lidar": bev_lidar,
-            "gt_boxes":  gt_boxes,
+            "cam2ego": cam2ego,
+            "intrinsics": intrinsics,
+            "gt_boxes": gt_boxes,
             "gt_labels": gt_labels,
-            "token":     sample["token"],
+            "token": sample["token"],
         }
-
     def _load_annotations(self, sample, lidar_data):
         """
         nuScenes stores `sample_annotation.translation` / `.rotation` in the

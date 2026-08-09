@@ -25,9 +25,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-# ------------------------------------------------------------------
+
 # Basic building blocks
-# ------------------------------------------------------------------
+
 class ConvBNReLU(nn.Module):
     def __init__(self, in_ch, out_ch, kernel=3, stride=1, padding=1, groups=1):
         super().__init__()
@@ -77,9 +77,8 @@ class LightResBlock(nn.Module):
         return F.relu(out + residual, inplace=True)
 
 
-# ------------------------------------------------------------------
 # LiDAR BEV Encoder
-# ------------------------------------------------------------------
+
 class LiDARBEVEncoder(nn.Module):
     """
     Lightweight LiDAR BEV feature encoder.
