@@ -26,12 +26,31 @@ from models.model import build_model, LightFusionNet
 from models.detection_head import decode_predictions
 
 def _default_dataroot():
-    return "/content/nuscenes" if os.path.exists("/content") else \
-           "/Users/yashgupta14/Downloads/bevfusion_ugv/Data_set/v1.0-mini"
+    # Colab dataset location.
+    if os.path.exists("/content/nuscenes"):
+        return "/content/nuscenes"
+
+    # Local development fallback.
+    return "/Users/yashgupta14/Downloads/bevfusion_ugv/Data_set/v1.0-mini"
 
 def _default_save_dir():
-    return "/content/drive/MyDrive/checkpoints" if os.path.exists("/content") else "checkpoints"
+    """
+    Return the persistent Google Drive checkpoint directory.
 
+    Training is stopped if Google Drive is not mounted. This prevents
+    checkpoints from being silently written to temporary Colab storage.
+    """
+    drive_dir = "/content/drive/MyDrive/Thesis/checkpoints"
+
+    if os.path.exists("/content/drive/MyDrive"):
+        os.makedirs(drive_dir, exist_ok=True)
+        return drive_dir
+
+    raise RuntimeError(
+        "Google Drive is not mounted. "
+        "Mount Google Drive before starting training so checkpoints "
+        "are saved persistently."
+    )
 # Config
 
 @dataclass
@@ -57,7 +76,7 @@ class TrainConfig:
 
     # runtime
     device:        str   = "cuda" if torch.cuda.is_available() else "cpu"
-    num_workers:   int   = 2
+    num_workers:   int   = 0   # 0 = safest/stablest setting for Colab
     save_dir:      str   = field(default_factory=_default_save_dir)#"checkpoints"
     log_every:     int   = 10         # log every N batches
     resume_from:   Optional[str] = None   # path to a .pth checkpoint to resume from
@@ -204,15 +223,20 @@ class Trainer:
         self.cfg = cfg
         os.makedirs(cfg.save_dir, exist_ok=True)
 
-        # ---- dataset 
+        print(f"Checkpoint directory: {cfg.save_dir}")
+
+        # ---- dataset and deterministic train/validation split ----
         full_dataset = NuScenesBEVDataset(
             dataroot=cfg.dataroot,
             version=cfg.version,
         )
         n_val   = int(len(full_dataset) * cfg.val_fraction)
         n_train = len(full_dataset) - n_val
-        self.train_ds, self.val_ds = random_split(full_dataset, [n_train, n_val])
+        generator = torch.Generator().manual_seed(42)
 
+        self.train_ds, self.val_ds = random_split(
+            full_dataset,[n_train, n_val],generator=generator
+)
         self.train_loader = DataLoader(
             self.train_ds,
             batch_size=cfg.batch_size,
@@ -230,7 +254,7 @@ class Trainer:
             pin_memory=True,
         )
 
-        # ---- model 
+        # ---- model ----
         self.model = build_model(
             fusion_mode=cfg.fusion_mode,
             feat_channels=cfg.feat_channels,
@@ -242,7 +266,7 @@ class Trainer:
         for k, v in param_info.items():
             print(f"  {k:20s} : {v:,}")
 
-        # ---- optimiser 
+        # ---- optimiser and learning-rate scheduler ----
         self.optimiser = torch.optim.AdamW(
             self.model.parameters(),
             lr=cfg.lr,
@@ -256,41 +280,133 @@ class Trainer:
 
     # -----------------------------------------------------------------
     def train(self):
-        print(f"\nTraining on {self.cfg.device} for {self.cfg.epochs} epochs")
-        print(f"Train samples: {len(self.train_ds)} | Val: {len(self.val_ds)}\n")
+        print(
+            f"\nTraining on {self.cfg.device} "
+            f"for {self.cfg.epochs} epochs"
+        )
+        print(
+            f"Train samples: {len(self.train_ds)} | "
+            f"Val: {len(self.val_ds)}\n"
+        )
 
+        # -------------------------------------------------------------
+        # Resume state
+        # -------------------------------------------------------------
         best_val = float("inf")
         start_epoch = 1
 
         if self.cfg.resume_from is not None:
-            last_epoch = self.load_checkpoint(self.cfg.resume_from)
+            last_epoch, best_val = self.load_checkpoint(
+                self.cfg.resume_from
+            )
             start_epoch = last_epoch + 1
 
-        for epoch in range(1, self.cfg.epochs + 1):
-            t0         = time.time()
+            if start_epoch > self.cfg.epochs:
+                print(
+                    f"Checkpoint is already at epoch {last_epoch}. "
+                    f"Configured epochs={self.cfg.epochs}; "
+                    f"no additional training is required."
+                )
+                return self.history
+
+        # -------------------------------------------------------------
+        # Training loop
+        # -------------------------------------------------------------
+        for epoch in range(start_epoch, self.cfg.epochs + 1):
+            t0 = time.time()
+
             train_loss = self._train_epoch(epoch)
-            val_loss   = self._val_epoch()
+            val_loss = self._val_epoch()
+
             self.scheduler.step()
 
             elapsed = time.time() - t0
+
             self.history["train_loss"].append(train_loss)
             self.history["val_loss"].append(val_loss)
             self._save_history()
 
-            print(f"Epoch {epoch:3d}/{self.cfg.epochs} | "
-                  f"train: {train_loss:.4f} | "
-                  f"val: {val_loss:.4f} | "
-                  f"lr: {self.scheduler.get_last_lr()[0]:.2e} | "
-                  f"time: {elapsed:.1f}s")
+            print(
+                f"Epoch {epoch:3d}/{self.cfg.epochs} | "
+                f"train: {train_loss:.4f} | "
+                f"val: {val_loss:.4f} | "
+                f"lr: {self.scheduler.get_last_lr()[0]:.2e} | "
+                f"time: {elapsed:.1f}s"
+            )
 
-            # save best
+            # ---------------------------------------------------------
+            # Save the best checkpoint whenever validation loss improves.
+            # ---------------------------------------------------------
             if val_loss < best_val:
                 best_val = val_loss
-                self._save_checkpoint(epoch, val_loss, tag="best")
 
-        # save final
-        self._save_checkpoint(self.cfg.epochs, val_loss, tag="final")
-        print(f"\nTraining complete. Best val loss: {best_val:.4f}")
+                self._save_checkpoint(
+                    epoch,
+                    val_loss,
+                    tag="best",
+                    best_val=best_val
+                )
+
+            # ---------------------------------------------------------
+            # Always save the latest checkpoint after the completed epoch.
+            # This is the recovery checkpoint used if Colab disconnects
+            # or the kernel restarts before training finishes.
+            # ---------------------------------------------------------
+            self._save_checkpoint(
+                epoch,
+                val_loss,
+                tag="latest",
+                best_val=best_val
+            )
+
+            # ---------------------------------------------------------
+            # Verify that the recovery checkpoint was actually written.
+            # Fail immediately rather than continuing a long run without
+            # a usable recovery checkpoint.
+            # ---------------------------------------------------------
+            latest_path = os.path.join(
+                self.cfg.save_dir,
+                f"lightfusion_{self.cfg.fusion_mode}_latest.pth"
+            )
+
+            if not os.path.exists(latest_path):
+                raise RuntimeError(
+                    f"Checkpoint was not created: {latest_path}"
+                )
+
+            # ---------------------------------------------------------
+            # Release unused CUDA memory after each epoch.
+            # ---------------------------------------------------------
+            if self.cfg.device == "cuda":
+                torch.cuda.empty_cache()
+
+        # -------------------------------------------------------------
+        # Save final checkpoint after the complete training run.
+        # -------------------------------------------------------------
+        self._save_checkpoint(
+            self.cfg.epochs,
+            val_loss,
+            tag="final",
+            best_val=best_val
+        )
+
+        print(
+            f"\nTraining complete. Best val loss: {best_val:.4f}"
+        )
+
+        print(
+            f"Best checkpoint: "
+            f"{os.path.join(self.cfg.save_dir, f'lightfusion_{self.cfg.fusion_mode}_best.pth')}"
+        )
+        print(
+            f"Final checkpoint: "
+            f"{os.path.join(self.cfg.save_dir, f'lightfusion_{self.cfg.fusion_mode}_final.pth')}"
+        )
+        print(
+            f"Latest checkpoint: "
+            f"{os.path.join(self.cfg.save_dir, f'lightfusion_{self.cfg.fusion_mode}_latest.pth')}"
+        )
+
         return self.history
 
     # -----------------------------------------------------------------
@@ -353,30 +469,118 @@ class Trainer:
 
         return total_loss / max(len(self.val_loader), 1)
 
-    ####
-    def _save_checkpoint(self, epoch: int, loss: float, tag: str = ""):
-        path = os.path.join(self.cfg.save_dir,
-                            f"lightfusion_{self.cfg.fusion_mode}_{tag}.pth")
+    # -----------------------------------------------------------------
+    # Checkpoint management
+    # -----------------------------------------------------------------
+    def _save_checkpoint(
+        self,
+        epoch: int,
+        loss: float,
+        tag: str = "",
+        best_val: float = float("inf"),
+    ):
+        """
+        Save a complete training checkpoint.
+
+        The checkpoint contains the model, optimiser, scheduler, training
+        history, current epoch, validation loss, and best validation loss.
+        The latest checkpoint is used to recover an interrupted Colab run
+        without losing optimiser/scheduler state or training history.
+        """
+        path = os.path.join(
+            self.cfg.save_dir,
+            f"lightfusion_{self.cfg.fusion_mode}_{tag}.pth"
+        )
+
         torch.save({
-            "epoch":       epoch,
-            "val_loss":    loss,
+            "epoch": epoch,
+            "val_loss": loss,
+            "best_val": best_val,
             "fusion_mode": self.cfg.fusion_mode,
-            "state_dict":  self.model.state_dict(),
-            "optimiser":   self.optimiser.state_dict(),
+
+            "state_dict": self.model.state_dict(),
+            "optimiser": self.optimiser.state_dict(),
+            "scheduler": self.scheduler.state_dict(),
+
+            "history": self.history,
         }, path)
+
+        if not os.path.exists(path):
+            raise RuntimeError(
+                f"Checkpoint save failed: {path}"
+            )
+
         print(f"  → Saved checkpoint: {path}")
+
+    # -----------------------------------------------------------------
     def _save_history(self):
+        """
+        Save the training and validation loss history as JSON.
+        """
         import json
-        path = os.path.join(self.cfg.save_dir, f"history_{self.cfg.fusion_mode}.json")
+
+        path = os.path.join(
+            self.cfg.save_dir,
+            f"history_{self.cfg.fusion_mode}.json"
+        )
+
         with open(path, "w") as f:
-            json.dump(self.history, f, indent=2)    
+            json.dump(
+                self.history,
+                f,
+                indent=2
+            )
+
+    # -----------------------------------------------------------------
     def load_checkpoint(self, path):
-        ckpt = torch.load(path, map_location=self.cfg.device)
-        self.model.load_state_dict(ckpt["state_dict"])
-        self.optimiser.load_state_dict(ckpt["optimiser"])
+        """
+        Load a complete training checkpoint and restore all training state.
+        """
+        print("\nLoading checkpoint:")
+        print(path)
+
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f"Checkpoint not found:\n{path}"
+            )
+
+        ckpt = torch.load(
+            path,
+            map_location=self.cfg.device
+        )
+
+        self.model.load_state_dict(
+            ckpt["state_dict"]
+        )
+
+        self.optimiser.load_state_dict(
+            ckpt["optimiser"]
+        )
+
+        if "scheduler" in ckpt:
+            self.scheduler.load_state_dict(
+                ckpt["scheduler"]
+            )
+
+        if "history" in ckpt:
+            self.history = ckpt["history"]
+
         start_epoch = ckpt["epoch"]
-        print(f"Resumed from epoch {start_epoch}, val_loss={ckpt['val_loss']:.4f}")
-        return start_epoch
+
+        best_val = ckpt.get(
+            "best_val",
+            ckpt["val_loss"]
+        )
+
+        print(
+            f"Resumed from epoch {start_epoch} | "
+            f"val_loss={ckpt['val_loss']:.4f} | "
+            f"best_val={best_val:.4f}"
+        )
+
+        return start_epoch, best_val
+
+
 if __name__ == "__main__":
     cfg = TrainConfig()
     trainer = Trainer(cfg)

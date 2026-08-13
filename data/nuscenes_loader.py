@@ -1,7 +1,7 @@
 """
 nuScenes Data Loader
 ====================
-Loads synchronized camera + LiDAR data from nuScenes-mini.
+Loads synchronized camera + LiDAR data from nuScenes.
 BEV-ready tensors for the fusion pipeline.
 """
 
@@ -138,28 +138,69 @@ class NuScenesBEVDataset(Dataset):
         self.samples = self._filter_available_samples(self.nusc.sample)
     
     def _filter_available_samples(self, all_samples):
+        """
+        Keep only samples for which every sensor required by the model
+        is physically present on disk.
+
+        The model consumes all six surround cameras plus LIDAR_TOP.
+        Previously this check verified only CAM_FRONT, which could allow
+        incomplete samples into the dataset and cause a later failure
+        inside __getitem__ when another camera or LiDAR file was opened.
+
+        A scene is excluded as soon as one required sensor file is missing.
+        This preserves the existing scene-level filtering behaviour while
+        making the availability check consistent with __getitem__.
+        """
         available = []
         missing_scenes = set()
+
+        # These are exactly the sensors loaded by __getitem__.
+        required_sensors = self.CAMERA_NAMES + ["LIDAR_TOP"]
+
         for sample in all_samples:
             scene_token = sample["scene_token"]
+
+            # Once a required file is missing from a scene, skip the
+            # remaining samples from that scene.
             if scene_token in missing_scenes:
                 continue
-            cam_token = sample["data"]["CAM_FRONT"]
-            cam_path  = os.path.join(
-                self.nusc.dataroot,
-                self.nusc.get("sample_data", cam_token)["filename"]
-            )
-            if os.path.exists(cam_path):
+
+            sample_complete = True
+
+            for sensor_name in required_sensors:
+                sensor_token = sample["data"].get(sensor_name)
+
+                # A missing sensor token means this sample is unusable.
+                if sensor_token is None:
+                    sample_complete = False
+                    break
+
+                sensor_data = self.nusc.get("sample_data", sensor_token)
+                sensor_path = os.path.join(
+                    self.nusc.dataroot,
+                    sensor_data["filename"]
+                )
+
+                if not os.path.exists(sensor_path):
+                    sample_complete = False
+                    break
+
+            if sample_complete:
                 available.append(sample)
             else:
                 missing_scenes.add(scene_token)
 
         n_total = len(all_samples)
         n_avail = len(available)
-        print(f"[NuScenesBEVDataset] {n_avail}/{n_total} samples available "
-          f"({len(missing_scenes)} scenes missing sensor files)")
+
+        print(
+            f"[NuScenesBEVDataset] {n_avail}/{n_total} samples available "
+            f"({len(missing_scenes)} scenes missing one or more required "
+            f"camera/LiDAR files)"
+        )
+
         return available
-    
+
     def __len__(self):
         return len(self.samples)
 

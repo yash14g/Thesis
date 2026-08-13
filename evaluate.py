@@ -175,7 +175,11 @@ def benchmark_fps(model, dataset, device, n_runs=30):
     latency = (elapsed / n_runs) * 1000.0
 
     return fps, latency
-# FLOPs benchmark using the same model input shape as the network.
+# Optional FLOPs benchmark.
+#
+# Retained for a separate controlled FLOPs run. It is intentionally
+# not called by the normal evaluation pipeline because fvcore tracing
+# can require substantial temporary memory.
 def compute_flops(model, device):
 
     model.eval()
@@ -223,7 +227,7 @@ def evaluate(
         # ---------------------------------------------------------
         dataset = NuScenesBEVDataset(
             dataroot=dataroot,
-            version="v1.0-mini"
+            version="v1.0-trainval"
         )
 
         # ---------------------------------------------------------
@@ -236,9 +240,11 @@ def evaluate(
         )
 
         # ---------------------------------------------------------
-        # Compute FLOPs
+        # FLOPs
         # ---------------------------------------------------------
-        gflops = compute_flops(model, device)
+        # Disabled during the normal evaluation run. fvcore tracing can
+        # create a large temporary memory footprint on the GPU.
+        gflops = None
 
         # ---------------------------------------------------------
         # DataLoader for mAP evaluation
@@ -281,18 +287,32 @@ def evaluate(
                 # -----------------------------------------------------
                 for i, det in enumerate(dets):
 
+                    # Move predictions to CPU immediately so accumulated
+                    # mAP data does not occupy GPU memory.
                     all_preds.append({
-                        k: v.cpu()
+                        k: v.detach().cpu()
+                        if isinstance(v, torch.Tensor)
+                        else v
                         for k, v in det.items()
                     })
 
+                    # Keep ground-truth tensors on CPU for mAP calculation.
                     all_gts.append({
-                        "boxes": batch["gt_boxes"][i],
-                        "labels": batch["gt_labels"][i],
+                        "boxes": batch["gt_boxes"][i].detach().cpu(),
+                        "labels": batch["gt_labels"][i].detach().cpu(),
                     })
 
+                # Release batch/model outputs before loading the next sample.
+                del dets
+                del preds
+                del batch_gpu
+
+                if device == "cuda":
+                    torch.cuda.empty_cache()
+
         # -------------------------------------------------------------
-        # Compute mAP
+        # Compute mAP from the CPU-side prediction and ground-truth
+        # collections accumulated during the dataset pass.
         # -------------------------------------------------------------
         mAP = compute_map(
             all_preds,
@@ -301,7 +321,8 @@ def evaluate(
         )
 
     else:
-        # No checkpoint -> cannot calculate mAP/FPS/FLOPs.
+        # Without a checkpoint there is no trained model to evaluate.
+        # Therefore mAP/FPS/latency are not meaningful for this run.
         fps, latency = 0.0, 0.0
 
     return {
@@ -333,12 +354,18 @@ def run_ablation_study(
         results.append(res)
 
         map_str = f"{res['mAP']:.4f}" if res["mAP"] is not None else "N/A"
+        gflops_str = (
+            f"{res['GFLOPs']:.2f}"
+            if res["GFLOPs"] is not None
+            else "N/A"
+        )
+
         print(
             f"  mAP={map_str} | "
             f"FPS={res['FPS']:.1f} | "
             f"Latency={res['latency_ms']:.1f}ms | "
-            f"Params={res['params_M']:.2f}M"
-            f"GFLOPs={res['GFLOPs']:.2f}"
+            f"Params={res['params_M']:.2f}M | "
+            f"GFLOPs={gflops_str}"
         )
 
     print("\n" + "=" * 72)
@@ -346,10 +373,16 @@ def run_ablation_study(
     print("-" * 72)
     for r in results:
         map_str = f"{r['mAP']:.4f}" if r["mAP"] is not None else "N/A"
+        gflops_str = (
+            f"{r['GFLOPs']:.2f}"
+            if r["GFLOPs"] is not None
+            else "N/A"
+        )
+
         print(
             f"{r['label']:<35} {map_str:>8} {r['FPS']:>6.1f} "
-            f"{r['latency_ms']:>9.1f}ms {r['params_M']:>7.2f}M"
-            f"{r['GFLOPs']:>9.2f}"
+            f"{r['latency_ms']:>9.1f}ms {r['params_M']:>7.2f}M "
+            f"{gflops_str:>9}"
         )
     print("=" * 72)
 
