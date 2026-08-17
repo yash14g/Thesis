@@ -1,16 +1,13 @@
 """
 Evaluation & Benchmarking
 ==========================
-
     - mAP (mean Average Precision)
     - FPS (inference speed)
     - Parameter count
-    - FLOPs 
-
+    - FLOPs
 
     For now, evaluate only the trained fused model
         se_unidirectional
-
 """
 
 
@@ -201,10 +198,17 @@ def compute_flops(model, device):
 def evaluate(
     fusion_mode: str,
     dataroot: str,
+    version: str = "v1.0-mini",
     checkpoint: str = None,
     device: str = "cpu",
     num_classes: int = 10,
 ):
+    # NOTE (fix applied): `version` used to be hardcoded to "v1.0-trainval"
+    # below regardless of what was passed in — meaning eval always tried
+    # to load the full trainval split even if you only trained/dev'd on
+    # v1.0-mini. It's now a real parameter that flows through to the
+    # dataset load, so pass whichever split your checkpoint was actually
+    # trained on.
     model = build_model(fusion_mode=fusion_mode, num_classes=num_classes).to(device)
 
     checkpoint_loaded = False
@@ -223,11 +227,12 @@ def evaluate(
     if checkpoint_loaded:
 
         # ---------------------------------------------------------
-        # Load REAL nuScenes dataset
+        # Load nuScenes dataset (now uses the `version` you passed in,
+        # not a hardcoded split)
         # ---------------------------------------------------------
         dataset = NuScenesBEVDataset(
             dataroot=dataroot,
-            version="v1.0-trainval"
+            version=version
         )
 
         # ---------------------------------------------------------
@@ -338,8 +343,11 @@ def run_ablation_study(
     dataroot: str,
     device: str = "cpu",
     ckpt_dir: str = "checkpoints",
+    version: str = "v1.0-mini",
 ):
-
+    # Only running your proposed model for now — expand this list to the
+    # other four modes later when you're ready to build the full ablation
+    # comparison table.
     experiments = [
         ("se_unidirectional", "SE Unidirectional ★ (proposed)"),
     ]
@@ -349,7 +357,7 @@ def run_ablation_study(
     for mode, label in experiments:
         print(f"\nEvaluating: {label}")
         ckpt = os.path.join(ckpt_dir, f"lightfusion_{mode}_best.pth")
-        res = evaluate(mode, dataroot, checkpoint=ckpt, device=device)
+        res = evaluate(mode, dataroot, version=version, checkpoint=ckpt, device=device)
         res["label"] = label
         results.append(res)
 
@@ -410,10 +418,17 @@ if __name__ == "__main__":
         help="Checkpoint directory"
     )
 
+    parser.add_argument(
+        "--version",
+        default="v1.0-mini",
+        help="nuScenes version/split to evaluate on"
+    )
+
     args = parser.parse_args()
 
     run_ablation_study(
         dataroot=args.dataroot,
         device="cuda" if torch.cuda.is_available() else "cpu",
         ckpt_dir=args.ckpt_dir,
+        version=args.version,
     )

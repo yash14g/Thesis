@@ -15,7 +15,7 @@ Pipeline:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.models import efficientnet_b0
+from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
 
 
 
@@ -29,7 +29,11 @@ class ImageBackbone(nn.Module):
     """
     def __init__(self, out_channels: int = 64):
         super().__init__()
-        base       = efficientnet_b0(pretrained=True)
+        # NOTE: torchvision deprecated `pretrained=True` in favour of the
+        # `weights=` API — the old kwarg raises an error on current
+        # torchvision (e.g. on Colab), so this loads the same ImageNet
+        # weights via EfficientNet_B0_Weights.DEFAULT instead.
+        base       = efficientnet_b0(weights=EfficientNet_B0_Weights.DEFAULT)
         # keep layers up to stage 5 (stride 16 total)
         self.stem  = base.features[:5]   # → 80 channels
         self.proj  = nn.Conv2d(80, out_channels, 1, bias=False)
@@ -76,6 +80,14 @@ class FrustumPooler(nn.Module):
 
     Simplified: we use a learnable grid_sample-based approach
     instead of a custom CUDA kernel for portability.
+
+    NOTE — grid alignment: this pooler maps ego-frame (x, y) to BEV
+    cells via (coord - min) / (max - min) * bev_dim. Your LiDAR-side
+    target generation instead divides by a fixed voxel_size. These
+    only produce the same grid if voxel_size == (max - min) / bev_dim
+    exactly — for your current BEV_CONFIG (voxel_size=0.5, range
+    (-50,50), bev_h/w=200) that holds: 100 / 0.5 = 200. Keep this in
+    mind if you ever change bev_h/bev_w or voxel_size independently.
     """
     def __init__(self,
                  feat_channels: int,
